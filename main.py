@@ -115,6 +115,28 @@ REGISTRO_SALTI = [
 ]
 
 
+def custom_round(val, decimals=0):
+    """
+    Arrotondamento aritmetico:
+    - .5 arrotonda sempre per eccesso (es. 2.5 -> 3, 3.5 -> 4)
+    - Gestisce sia numeri che stringhe convertibili
+    """
+    try:
+        if val is None or str(val).strip() == "":
+            return val
+            
+        n = float(str(val).replace(',', '.'))
+        multiplier = 10 ** decimals
+        # Aggiungiamo un epsilon piccolissimo per gestire errori di floating point
+        res = int(n * multiplier + 0.5) / multiplier
+        
+        if decimals == 0:
+            return int(res)
+        return res
+    except:
+        return val
+
+
 def carica_file_universale(uploaded_file):
     """Carica file Excel o CSV da un oggetto file-like di Streamlit o path"""
     if uploaded_file is None:
@@ -353,12 +375,12 @@ def elabora_salti_cronologici(df, ws, data_selezionata):
                 peso_effettivo = gruppi_disponibili[idx_trovato]['peso']
                 # Scrive il peso nella cella R configurata arrotondato a 1 cifra
                 try: 
-                    peso_effettivo = round(float(str(peso_effettivo).replace(',', '.')), 1)
+                    peso_effettivo = custom_round(float(str(peso_effettivo).replace(',', '.')), 1)
                 except: 
                     pass
                 ws[regola["weight_output"]] = peso_effettivo
                 if isinstance(peso_effettivo, (int, float)):
-                    ws[regola["weight_output"]].number_format = '0.00'
+                    ws[regola["weight_output"]].number_format = '0.0'
                 print(f" -> Scritto peso {peso_effettivo} in {regola['weight_output']}")
             # --------------------------
             # Prende i top 3 valori di Altezza
@@ -380,7 +402,8 @@ def elabora_salti_cronologici(df, ws, data_selezionata):
                         if no_round_dja:
                             vals_processed.append(val_float)
                         else:
-                            vals_processed.append(round(val_float, 1))
+                            # Usa arrotondamento custom
+                            vals_processed.append(custom_round(val_float, 1))
                     except:
                         if v is not None and str(v).lower() != "nan":
                             vals_processed.append(v)
@@ -397,7 +420,7 @@ def elabora_salti_cronologici(df, ws, data_selezionata):
                         v2 = float(vals_processed[1])
                         media = (v1 + v2) / 2
                         if not no_round_dja:
-                            media = round(media, 1)
+                            media = custom_round(media, 1)
                         vals_processed.append(media)
                     except:
                         pass
@@ -412,7 +435,7 @@ def elabora_salti_cronologici(df, ws, data_selezionata):
                         if no_round_dja:
                             ws[cella].number_format = '0.000'
                         else:
-                            ws[cella].number_format = '0.00'
+                            ws[cella].number_format = '0.0'
         else:
             # st.warning(f" -> Regola {tipo_req} (Disc: {discrim}): NESSUN GRUPPO TROVATO (Lascio bianco)")
             for out_conf in regola['outputs']:
@@ -483,19 +506,27 @@ def elabora_salti_rj(df, ws, data_selezionata):
     val_tc_avg = best_series_row.iloc[col_map.get('tc avg')]
     val_avg_rsi = best_series_row.iloc[col_map.get('avg rsi')]
 
-    def secure_num(val):
-        # Richiesta: NO arrotondamento per RJ
-        try: return float(str(val).replace(',', '.'))
+    def secure_num(val, decimals=None):
+        # Richiesta: NO arrotondamento per RJ tranne H AVG, ma usiamo custom_round se serve
+        try: 
+            v = float(str(val).replace(',', '.'))
+            if decimals is not None:
+                return custom_round(v, decimals)
+            return v
         except: return val
 
-    ws["F19"] = secure_num(val_avg_altezza)
-    ws["F19"].number_format = '0.000'
-    ws["H19"] = secure_num(val_tc_avg)
+    # MODIFICA: F19 (AVG Altezza) deve avere 2 decimali e arrotondamento custom (ma l'ultimo a 0 -> round a 1)
+    # H19 (TC AVG) torna a 3 decimali default
+    ws["F19"] = secure_num(val_avg_altezza, 1)
+    ws["F19"].number_format = '0.00'
+
+    ws["H19"] = secure_num(val_tc_avg) 
     ws["H19"].number_format = '0.000'
+    
     ws["I19"] = secure_num(val_avg_rsi)
     ws["I19"].number_format = '0.000'
     
-    st.info(f"Serie RJ selezionata (TC AVG: {val_tc_avg}). Scritto in F19, H19, I19.")
+    st.info(f"Serie RJ selezionata (TC AVG: {val_tc_avg}). Scritto in F19 (Altezza), H19 (TC), I19 (RSI).")
 
     # 6. Trova TC Minore tra i singoli salti positivi
     # Le righe dei singoli salti seguono la riga di riepilogo
@@ -592,19 +623,19 @@ def elabora_step1_anagrafica(df, ws, data_selezionata):
             elif valore.upper() == "F": valore = "DONNA"
             
         
-        # Arrotondamento anagrafica (Altezza, Peso, Lunghezza Gamba...)
-        # Applichiamo formato '0.00' se è un numero
+        # Arrotondamento anagrafica: RIMUOVERE LA VIRGOLA (Interi)
+        # Richiesta: "levare i numeri con la virgola dai dati anagrafici" -> custom_round(val, 0)
         is_number = False
         try:
             val_num = float(str(valore).replace(',', '.'))
-            valore = round(val_num, 1)
+            valore = custom_round(val_num, 0) # Arrotondamento all'intero
             is_number = True
         except:
             pass
 
         ws[cella] = valore
         if is_number:
-            ws[cella].number_format = '0.00'
+            ws[cella].number_format = '0' # Formato intero senza decimali
         
         st.info(f" -> {etichetta}: {valore} (scritto in {cella})")
 
