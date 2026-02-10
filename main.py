@@ -5,6 +5,8 @@ import warnings
 import streamlit as st
 import io
 import traceback
+import tempfile
+from numbers_parser import Document
 
 # Ignora avvisi non critici
 warnings.filterwarnings("ignore")
@@ -145,6 +147,31 @@ def carica_file_universale(uploaded_file):
 
     # Reset del puntatore per tentativi CSV
     uploaded_file.seek(0)
+
+    # Supporto per file Apple .numbers
+    if filename.endswith('.numbers'):
+        try:
+            # numbers-parser richiede un file fisico su disco
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".numbers") as tmp:
+                tmp.write(uploaded_file.read())
+                tmp_path = tmp.name
+            
+            try:
+                doc = Document(tmp_path)
+                sheets = doc.sheets
+                if sheets:
+                    tables = sheets[0].tables
+                    if tables:
+                        table = tables[0]
+                        data = table.rows(values_only=True)
+                        df = pd.DataFrame(data)
+                        return df
+            finally:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+                    
+        except Exception as e:
+            print(f"Errore caricamento .numbers: {e}")
 
     for sep in [',', ';', '\t']:
         try:
@@ -330,6 +357,8 @@ def elabora_salti_cronologici(df, ws, data_selezionata):
                 except: 
                     pass
                 ws[regola["weight_output"]] = peso_effettivo
+                if isinstance(peso_effettivo, (int, float)):
+                    ws[regola["weight_output"]].number_format = '0.00'
                 print(f" -> Scritto peso {peso_effettivo} in {regola['weight_output']}")
             # --------------------------
             # Prende i top 3 valori di Altezza
@@ -338,12 +367,20 @@ def elabora_salti_cronologici(df, ws, data_selezionata):
             for out_conf in regola['outputs']:
                 col_dato = out_conf['dato']
                 celle = out_conf['celle']
-                # Estraiamo i valori, li arrotondiamo a 1 decimale
+                
+                # Determina applicazione arrotondamento
+                # Richiesta: NO arrotondamento per DJa (solo dato TC), SI arrotondamento per altri
+                no_round_dja = (tipo_req == "DJa" and col_dato == "TC")
+
                 vals_raw = df_sorted_top[col_dato].tolist()
                 vals_processed = []
                 for v in vals_raw:
                     try:
-                        vals_processed.append(round(float(str(v).replace(',', '.')), 1))
+                        val_float = float(str(v).replace(',', '.'))
+                        if no_round_dja:
+                            vals_processed.append(val_float)
+                        else:
+                            vals_processed.append(round(val_float, 1))
                     except:
                         if v is not None and str(v).lower() != "nan":
                             vals_processed.append(v)
@@ -358,7 +395,9 @@ def elabora_salti_cronologici(df, ws, data_selezionata):
                     try:
                         v1 = float(vals_processed[0])
                         v2 = float(vals_processed[1])
-                        media = round((v1 + v2) / 2, 1)
+                        media = (v1 + v2) / 2
+                        if not no_round_dja:
+                            media = round(media, 1)
                         vals_processed.append(media)
                     except:
                         pass
@@ -369,6 +408,11 @@ def elabora_salti_cronologici(df, ws, data_selezionata):
                 for k, cella in enumerate(celle):
                     val = vals_processed[k] if k < len(vals_processed) else ""
                     ws[cella] = val
+                    if isinstance(val, (int, float)):
+                        if no_round_dja:
+                            ws[cella].number_format = '0.000'
+                        else:
+                            ws[cella].number_format = '0.00'
         else:
             # st.warning(f" -> Regola {tipo_req} (Disc: {discrim}): NESSUN GRUPPO TROVATO (Lascio bianco)")
             for out_conf in regola['outputs']:
@@ -440,14 +484,18 @@ def elabora_salti_rj(df, ws, data_selezionata):
     val_avg_rsi = best_series_row.iloc[col_map.get('avg rsi')]
 
     def secure_num(val):
-        try: return round(float(str(val).replace(',', '.')), 1)
+        # Richiesta: NO arrotondamento per RJ
+        try: return float(str(val).replace(',', '.'))
         except: return val
 
     ws["F19"] = secure_num(val_avg_altezza)
+    ws["F19"].number_format = '0.000'
     ws["H19"] = secure_num(val_tc_avg)
+    ws["H19"].number_format = '0.000'
     ws["I19"] = secure_num(val_avg_rsi)
+    ws["I19"].number_format = '0.000'
     
-    st.info(f"Serie RJ selezionata (TC AVG: {val_tc_avg}). Scritto in F19, H19, I19 (Arrotondato 1 cifra).")
+    st.info(f"Serie RJ selezionata (TC AVG: {val_tc_avg}). Scritto in F19, H19, I19.")
 
     # 6. Trova TC Minore tra i singoli salti positivi
     # Le righe dei singoli salti seguono la riga di riepilogo
@@ -472,7 +520,8 @@ def elabora_salti_rj(df, ws, data_selezionata):
             continue
             
     if min_tc_pos != float('inf'):
-        ws["G19"] = round(min_tc_pos, 1)
+        ws["G19"] = min_tc_pos
+        ws["G19"].number_format = '0.000'
         st.info(f"TC minore positivo trovato: {ws['G19'].value} (scritto in G19).")
     else:
         ws["G19"] = ""
@@ -542,14 +591,21 @@ def elabora_step1_anagrafica(df, ws, data_selezionata):
             if valore.upper() == "M": valore = "UOMO"
             elif valore.upper() == "F": valore = "DONNA"
             
+        
         # Arrotondamento anagrafica (Altezza, Peso, Lunghezza Gamba...)
+        # Applichiamo formato '0.00' se è un numero
+        is_number = False
         try:
             val_num = float(str(valore).replace(',', '.'))
             valore = round(val_num, 1)
+            is_number = True
         except:
             pass
 
         ws[cella] = valore
+        if is_number:
+            ws[cella].number_format = '0.00'
+        
         st.info(f" -> {etichetta}: {valore} (scritto in {cella})")
 
 
@@ -559,7 +615,7 @@ def main():
     st.markdown("Carica il file dati e il modello Excel per generare il report finale.")
 
     # 1. Widget Caricamento File Sorgente
-    uploaded_file_sorgente = st.file_uploader("Carica file 'Allenamento' (Excel o CSV)", type=['xlsx', 'csv'])
+    uploaded_file_sorgente = st.file_uploader("Carica file 'Allenamento' (Excel, CSV o Numbers)", type=['xlsx', 'csv', 'numbers'])
 
     # 2. Widget Caricamento File Modello
     uploaded_file_modello = st.file_uploader("Carica file 'Modello' (Excel)", type=['xlsx'])
