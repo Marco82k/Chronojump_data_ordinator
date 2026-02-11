@@ -641,7 +641,7 @@ def elabora_step1_anagrafica(df, ws, data_selezionata):
 
 
 def main():
-    st.set_page_config(page_title="🚀 Athletic Data Excel Sync 📈", page_icon="🚀")
+    st.set_page_config(page_title="Athletic Data Excel Sync 📈", page_icon="🚀")
     st.title("🚀 Athletic Data Excel Sync 📈")
     st.markdown("Carica il file dati e il modello Excel per generare il report finale.")
 
