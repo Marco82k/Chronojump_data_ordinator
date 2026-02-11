@@ -380,7 +380,7 @@ def elabora_salti_cronologici(df, ws, data_selezionata):
                     pass
                 ws[regola["weight_output"]] = peso_effettivo
                 if isinstance(peso_effettivo, (int, float)):
-                    ws[regola["weight_output"]].number_format = '0.0'
+                    ws[regola["weight_output"]].number_format = '0.00'
                 print(f" -> Scritto peso {peso_effettivo} in {regola['weight_output']}")
             # --------------------------
             # Prende i top 3 valori di Altezza
@@ -435,7 +435,7 @@ def elabora_salti_cronologici(df, ws, data_selezionata):
                         if no_round_dja:
                             ws[cella].number_format = '0.000'
                         else:
-                            ws[cella].number_format = '0.0'
+                            ws[cella].number_format = '0.00'
         else:
             # st.warning(f" -> Regola {tipo_req} (Disc: {discrim}): NESSUN GRUPPO TROVATO (Lascio bianco)")
             for out_conf in regola['outputs']:
@@ -642,7 +642,7 @@ def elabora_step1_anagrafica(df, ws, data_selezionata):
 
 def main():
     st.set_page_config(page_title="Elaborazione Dati Atletici", page_icon="🏃‍♂️")
-    st.title("Elaborazione Dati Atletici 🏃‍♂️")
+    st.title("🚀 Athletic Data Excel Sync 📈")
     st.markdown("Carica il file dati e il modello Excel per generare il report finale.")
 
     # 1. Widget Caricamento File Sorgente
@@ -663,8 +663,7 @@ def main():
             st.warning(f"Attenzione: Modello '{path_modello_locale}' non trovato in locale. Caricane uno.")
 
     # 3. Data dei Dati
-    st.markdown("### 📅 Filtro Data")
-    data_test = st.date_input("Seleziona la data dei dati da ricercare", value=pd.Timestamp.now().date())
+    data_test = st.date_input("📅 Test Date Selector 📅", value=pd.Timestamp.now().date(), format="DD/MM/YYYY")
 
     # 4. Nome Output
     output_name = st.text_input("Nome file di output", value="Risultati_Atleta.xlsx")
