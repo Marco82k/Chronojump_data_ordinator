@@ -383,8 +383,12 @@ def elabora_salti_cronologici(df, ws, data_selezionata):
                     ws[regola["weight_output"]].number_format = '0.00'
                 print(f" -> Scritto peso {peso_effettivo} in {regola['weight_output']}")
             # --------------------------
+
             # Prende i top 3 valori di Altezza
-            df_sorted_top = gruppo_trovato.sort_values(by='Altezza', ascending=False).head(3)
+            # 1. Trova i 3 con altezza maggiore
+            top_3_indices = gruppo_trovato.sort_values(by='Altezza', ascending=False).head(3).index 
+            # 2. Li ordina per indice (cronologico)
+            df_sorted_top = gruppo_trovato.loc[top_3_indices].sort_index()
 
             for out_conf in regola['outputs']:
                 col_dato = out_conf['dato']
@@ -425,8 +429,8 @@ def elabora_salti_cronologici(df, ws, data_selezionata):
                     except:
                         pass
                 
-                # Ordinamento CRESCENTE richiesto dall'utente
-                vals_processed.sort()
+                # Ordinamento RIMOSSO per mantenere cronologia
+                # vals_processed.sort()
 
                 for k, cella in enumerate(celle):
                     val = vals_processed[k] if k < len(vals_processed) else ""
@@ -444,118 +448,229 @@ def elabora_salti_cronologici(df, ws, data_selezionata):
 
 
 def elabora_salti_rj(df, ws, data_selezionata):
-    """Elabora i salti reattivi (RJ) e scrive nel worksheet."""
-    st.write("--- ESECUZIONE STEP 3 (SALTI REATTIVI RJ) ---")
+    """
+    Elabora i salti reattivi (RJ) con LOGICA RIGOROSA A COORDINATE RELATIVE:
+    1. Cerca riga con 'RJ'/'RJ(unlimited)' nella colonna 'Tipo di salto'.
+    2. Riga+1: Verifica intestazioni colonne -> Col B (TC), Col D (Altezza), Col E (RSI).
+    3. Riga+4: Verifica ancoraggio 'SD' in Col A.
+    4. Riga+5: Inizio dati numerici. Legge finché Col A contiene numeri.
+    5. Calcola Top 5 e scrive risultati.
+    """
+    st.write("--- ESECUZIONE STEP 3 (RJ: COORDINATE RIGIDE) ---")
+    
+    from openpyxl.styles import Alignment
 
-    riga_header = -1
-    col_map = {}
-
-    # 1. Trova l'header della sezione RJ
-    # Cerchiamo l'header che contiene 'tipo di salto' e 'tc avg'
+    # 1. Trova Colonna "Tipo di salto"
+    idx_tipo = -1
+    idx_data = -1
+    
+    # Cerchiamo l'intestazione generale per capire dov'è la colonna Tipo
     for i, riga in df.iterrows():
         riga_lista = [str(x).strip().lower() for x in riga.tolist()]
-        if "tipo di salto" in riga_lista and "tc avg" in riga_lista:
-            riga_header = i
-            for idx, val in enumerate(riga_lista): col_map[val] = idx
+        if "tipo di salto" in riga_lista:
+            # Trovata riga header principale
+            for idx, val in enumerate(riga_lista):
+                if "tipo di salto" in val: idx_tipo = idx
+                if "data" in val: idx_data = idx
             break
-
-    if riga_header == -1:
-        st.warning("Sezione RJ (Salti Reattivi) non trovata nel file.")
-        return
-
-    # 2. Estrai tutte le righe di riepilogo RJ
-    df_data = df.iloc[riga_header + 1:].copy()
     
-    # Identifichiamo le righe di riepilogo: hanno un valore in 'tipo di salto' (RJ) e una 'Data'
-    def is_summary_row(row):
-        tipo = str(row.iloc[col_map.get('tipo di salto', 0)]).strip().lower()
-        data_val = str(row.iloc[col_map.get('data', 0)]).strip().lower()
-        return "rj" in tipo and data_val not in ["nan", "none", ""]
-
-    summary_mask = df_data.apply(is_summary_row, axis=1)
-    df_summaries = df_data[summary_mask].copy()
-
-    if df_summaries.empty:
-        st.warning("Nessuna serie RJ trovata.")
+    if idx_tipo == -1:
+        st.warning("⚠️ Colonna 'Tipo di salto' non identificata nel file.")
         return
 
-    # 3. Filtra per data selezionata
-    def confronta_date(row, data_selected):
-        data_file_str = str(row.iloc[col_map.get('data', 0)]).strip()
+    # Helper functions
+    def to_float(val):
         try:
-            d_file = pd.to_datetime(data_file_str).date()
-            return d_file == data_selected
+            return float(str(val).replace(',', '.').strip())
         except:
-            return str(data_selected) in data_file_str
+            return None
 
-    df_summaries['date_match'] = df_summaries.apply(lambda r: confronta_date(r, data_selezionata), axis=1)
-    df_filtered = df_summaries[df_summaries['date_match']]
-
-    if df_filtered.empty:
-        st.warning(f"Nessuna serie RJ trovata per la data {data_selezionata}.")
-        return
-
-    # 4. Scegli quella con TC AVG minore
-    col_tc_avg = col_map.get('tc avg')
-    df_filtered['TC_AVG_NUM'] = pd.to_numeric(df_filtered.iloc[:, col_tc_avg].astype(str).str.replace(',', '.'), errors='coerce')
-    best_series_row = df_filtered.sort_values(by='TC_AVG_NUM', ascending=True).iloc[0]
-    
-    # 5. Estrai e scrivi i parametri
-    # AVG altezza: F19, TC AVG: H19, AVG RSI: I19
-    val_avg_altezza = best_series_row.iloc[col_map.get('avg altezza')]
-    val_tc_avg = best_series_row.iloc[col_map.get('tc avg')]
-    val_avg_rsi = best_series_row.iloc[col_map.get('avg rsi')]
-
-    def secure_num(val, decimals=None):
-        # Richiesta: NO arrotondamento per RJ tranne H AVG, ma usiamo custom_round se serve
-        try: 
-            v = float(str(val).replace(',', '.'))
-            if decimals is not None:
-                return custom_round(v, decimals)
-            return v
-        except: return val
-
-    # MODIFICA: F19 (AVG Altezza) deve avere 2 decimali e arrotondamento custom (ma l'ultimo a 0 -> round a 1)
-    # H19 (TC AVG) torna a 3 decimali default
-    ws["F19"] = secure_num(val_avg_altezza, 1)
-    ws["F19"].number_format = '0.00'
-
-    ws["H19"] = secure_num(val_tc_avg) 
-    ws["H19"].number_format = '0.000'
-    
-    ws["I19"] = secure_num(val_avg_rsi)
-    ws["I19"].number_format = '0.000'
-    
-    st.info(f"Serie RJ selezionata (TC AVG: {val_tc_avg}). Scritto in F19 (Altezza), H19 (TC), I19 (RSI).")
-
-    # 6. Trova TC Minore tra i singoli salti positivi
-    # Le righe dei singoli salti seguono la riga di riepilogo
-    idx_summary = best_series_row.name
-    # Vediamo le righe successive finché non troviamo un'altra serie o la fine
-    jumps_data = df.iloc[idx_summary + 1 : idx_summary + 15] # Tipicamente 10-15 salti max
-    
-    min_tc_pos = float('inf')
-    col_tc_individual = 1 # Dai dati sembra che i singoli salti abbiano TC in colonna 1 (B)
-    
-    # Cerchiamo di identificare la colonna TC per i singoli salti. 
-    # Spesso è la stessa colonna o quella definita nell'header come 'TC' (non AVG)
-    # Dalle verifiche precedenti, colonna 1 (indice 1) conteneva 0.235, 0.226 etc.
-    
-    for i, row in jumps_data.iterrows():
+    def check_date_match(val_cella, target):
         try:
-            val_str = str(row.iloc[1]).strip().replace(',', '.')
-            val_num = float(val_str)
-            if val_num > 0 and val_num < min_tc_pos:
-                min_tc_pos = val_num
+            s = str(val_cella).strip()
+            if pd.to_datetime(s, dayfirst=True, errors='coerce').date() == target: return True
+            if str(target) in s: return True
         except:
+            pass
+        return False
+
+    def is_number(val):
+        try:
+            float(str(val).replace(',', '.').strip())
+            return True
+        except:
+            return False
+
+    n_rows = len(df)
+    sessions_found = []
+    
+    # Scansione per trovare righe RJ
+    i = 0
+    while i < n_rows:
+        row = df.iloc[i]
+        
+        # Check RJ
+        is_rj = False
+        try:
+            val_tipo = str(row.iloc[idx_tipo]).strip().lower()
+            if "rj" in val_tipo:
+                # Check Date
+                val_data = row.iloc[idx_data] if idx_data != -1 else None
+                if idx_data != -1 and check_date_match(val_data, data_selezionata):
+                    is_rj = True
+                elif idx_data == -1:
+                    # Se non abbiamo colonna data, controlliamo nella riga? 
+                    # Assumiamo che ci sia la colonna data se abbiamo trovato 'Tipo di salto'
+                    pass
+        except: pass
+        
+        if is_rj:
+            st.info(f"📍 Trovato potenziale RJ a riga {i+1}. Verifico struttura...")
+            
+            # --- VERIFICA COORDINATE RELATIVE ---
+            
+            # 1. Riga + 1: Colonne B (TC), D (Altezza), E (RSI)
+            # Indici (0-based): B=1, D=3, E=4
+            r_sigle = i + 1
+            if r_sigle >= n_rows: break
+            
+            row_sigle = df.iloc[r_sigle]
+            
+            # Controllo "blando" sulle sigle per confermare che siamo nel posto giusto
+            try:
+                sigla_b = str(row_sigle.iloc[1]).strip().lower() # TC
+                sigla_d = str(row_sigle.iloc[3]).strip().lower() # Altezza
+                sigla_e = str(row_sigle.iloc[4]).strip().lower() # RSI
+                
+                # Keywords
+                ok_b = any(x in sigla_b for x in ['tc', 'contact', 'time'])
+                ok_d = any(x in sigla_d for x in ['altezza', 'height', 'h '])
+                ok_e = any(x in sigla_e for x in ['rsi', 'reactive', 'index'])
+                
+                if not (ok_b and ok_d): 
+                    st.warning(f"   Struttura colonne non corrispondente a riga {r_sigle+1} (D={sigla_d}, B={sigla_b})")
+                    i += 1
+                    continue
+            except:
+                i += 1
+                continue
+
+            # 2. Riga + 4 (partendo da 'i+1' scendo di 3 -> i+1+3 = i+4): Ancoraggio 'SD' in Col A (0)
+            r_sd = i + 4
+            if r_sd >= n_rows: break
+            
+            row_sd = df.iloc[r_sd]
+            try:
+                sigla_sd = str(row_sd.iloc[0]).strip().lower()
+                if "sd" not in sigla_sd and "jump" not in sigla_sd:
+                     st.warning(f"   Manca 'SD' in colonna A alla riga {r_sd+1}")
+                     i += 1
+                     continue
+            except:
+                i += 1
+                continue
+                
+            # 3. Riga + 5: Inizio Dati
+            r_data = i + 5
+            collected_jumps = []
+            
+            k = r_data
+            while k < n_rows:
+                d_row = df.iloc[k]
+                
+                # Check Colonna A (Indice Salto)
+                val_a = d_row.iloc[0]
+                if not is_number(val_a):
+                     # Fine dati
+                     break
+                
+                # Estrazione Valori (B=1 TC, D=3 H, E=4 RSI)
+                try:
+                    val_tc = to_float(d_row.iloc[1])
+                    val_h  = to_float(d_row.iloc[3])
+                    val_rsi= to_float(d_row.iloc[4])
+                    
+                    if val_h is not None and val_h > 0:
+                        collected_jumps.append({
+                            'h': val_h,
+                            'tc': val_tc if val_tc else 0.0,
+                            'rsi': val_rsi if val_rsi else 0.0
+                        })
+                except:
+                    pass
+                
+                k += 1
+            
+            # --- CALCOLO STATISTICHE SESSIONE ---
+            if collected_jumps:
+                df_sess = pd.DataFrame(collected_jumps)
+                
+                # 1. Filtro Qualità: Scarta H <= 0 o NaN
+                df_sess = df_sess[df_sess['h'] > 0].copy()
+                
+                if not df_sess.empty:
+                    # 2. Seleziona Top 5 per Altezza
+                    if len(df_sess) > 5:
+                        top_5 = df_sess.sort_values(by='h', ascending=False).head(5)
+                    else:
+                        top_5 = df_sess
+                    
+                    # 3. Calcolo Medie Robuste (escludendo 0 nel conteggio per TC e RSI)
+                    # Helper per media non-zero
+                    def mean_exclude_zeros(series):
+                        valid_vals = series[series > 0]
+                        if valid_vals.empty: return 0.0
+                        return valid_vals.mean()
+
+                    avg_h = top_5['h'].mean()
+                    avg_tc = mean_exclude_zeros(top_5['tc'])
+                    avg_rsi = mean_exclude_zeros(top_5['rsi'])
+                    
+                    stats = {
+                        'avg_h': avg_h,
+                        'avg_tc': avg_tc,
+                        'avg_rsi': avg_rsi,
+                        'n_salti': len(df_sess), # Salti validi totali
+                        'start_row': i
+                    }
+                    sessions_found.append(stats)
+                    st.success(f"   ✅ Sessione valida estratta: {len(df_sess)} salti validi.")
+                
+            # Saltiamo k righe
+            i = k
             continue
             
-    if min_tc_pos != float('inf'):
-        ws["G19"] = min_tc_pos
-        ws["G19"].number_format = '0.000'
-        st.info(f"TC minore positivo trovato: {ws['G19'].value} (scritto in G19).")
+        i += 1
+        
+    # --- SELEZIONE MIGLIORE E SCRITTURA ---
+    if not sessions_found:
+        st.warning(f"Nessuna sessione RJ valida trovata per la data {data_selezionata}.")
+        ws["F19"] = ""; ws["H19"] = ""; ws["I19"] = ""; ws["G19"] = "?"
+        return
+
+    # Migliore per Avg H
+    best = max(sessions_found, key=lambda x: x['avg_h'])
+    
+    st.markdown(f"**🏆 Sessione Vincente (Riga {best['start_row']+1}):** Avg H {best['avg_h']:.2f}")
+
+    # Scrittura
+    ws["F19"] = custom_round(best['avg_h'], 2)
+    ws["F19"].number_format = '0.00'
+    
+    if best['avg_tc'] > 0:
+        ws["H19"] = custom_round(best['avg_tc'], 3)
+        ws["H19"].number_format = '0.000'
     else:
-        ws["G19"] = ""
+        ws["H19"] = ""
+    
+    if best['avg_rsi'] > 0:
+        ws["I19"] = custom_round(best['avg_rsi'], 3)
+        ws["I19"].number_format = '0.000'
+    else:
+        ws["I19"] = ""
+    
+    ws["G19"] = "?"
+    ws["G19"].alignment = Alignment(horizontal='center')
 
 
 def elabora_step1_anagrafica(df, ws, data_selezionata):
@@ -641,7 +756,7 @@ def elabora_step1_anagrafica(df, ws, data_selezionata):
 
 
 def main():
-    st.set_page_config(page_title="🚀 Athletic Data Excel Sync 📈", page_icon="🚀")
+    st.set_page_config(page_title="Athletic Data Excel Sync 📈", page_icon="🚀")
     st.title("🚀 Athletic Data Excel Sync 📈")
     st.markdown("Carica il file dati e il modello Excel per generare il report finale.")
 
@@ -696,11 +811,9 @@ def main():
 
                 # B. Caricamento Modello e Processamento
                 wb = load_workbook(modello_da_usare)
-                if 'ATLETA' not in wb.sheetnames:
-                    st.error("Il file modello non contiene il foglio 'ATLETA'.")
-                    return
-
-                ws = wb['ATLETA']
+                # Seleziona sempre il primo foglio disponibile
+                ws = wb.worksheets[0]
+                st.info(f"Foglio selezionato automaticamente: {ws.title}")
 
                 # C. Esecuzione Step
                 elabora_step1_anagrafica(df, ws, data_test)
