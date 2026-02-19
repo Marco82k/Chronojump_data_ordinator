@@ -1,5 +1,7 @@
 import pandas as pd
 from openpyxl import load_workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Color
+from openpyxl.utils.cell import coordinate_to_tuple
 import os
 import warnings
 import streamlit as st
@@ -7,6 +9,9 @@ import io
 import traceback
 import tempfile
 from numbers_parser import Document
+import plotly.express as px
+import plotly.graph_objects as go
+import re
 
 # Ignora avvisi non critici
 warnings.filterwarnings("ignore")
@@ -645,7 +650,7 @@ def elabora_salti_rj(df, ws, data_selezionata):
     # --- SELEZIONE MIGLIORE E SCRITTURA ---
     if not sessions_found:
         st.warning(f"Nessuna sessione RJ valida trovata per la data {data_selezionata}.")
-        ws["F19"] = ""; ws["H19"] = ""; ws["I19"] = ""; ws["G19"] = "?"
+        ws["F19"] = ""; ws["H19"] = ""; ws["I19"] = ""
         return
 
     # Migliore per Avg H
@@ -668,9 +673,6 @@ def elabora_salti_rj(df, ws, data_selezionata):
         ws["I19"].number_format = '0.000'
     else:
         ws["I19"] = ""
-    
-    ws["G19"] = "?"
-    ws["G19"].alignment = Alignment(horizontal='center')
 
 
 def elabora_step1_anagrafica(df, ws, data_selezionata):
@@ -756,88 +758,381 @@ def elabora_step1_anagrafica(df, ws, data_selezionata):
 
 
 def main():
-    st.set_page_config(page_title="Athletic Data Excel Sync 📈", page_icon="🚀")
-    st.title("🚀 Athletic Data Excel Sync 📈")
-    st.markdown("Carica il file dati e il modello Excel per generare il report finale.")
+    st.set_page_config(page_title="Athletic Data Excel Sync 📈", page_icon="🚀", layout="wide")
+    
+    # --- Sidebar Navigation ---
+    st.sidebar.title("Menu Navigazione")
+    pagina = st.sidebar.radio("Vai a:", ["Athletic Data", "Report"])
 
-    # 1. Widget Caricamento File Sorgente
-    uploaded_file_sorgente = st.file_uploader("Carica file 'Allenamento' (Excel, CSV o Numbers)", type=['xlsx', 'csv', 'numbers'])
+    if pagina == "Athletic Data":
+        # --- Pagina Principale (Codice Esistente) ---
+        st.title("🚀 Athletic Data Excel Sync 📈")
+        st.markdown("Carica il file dati e il modello Excel per generare il report finale.")
 
-    # 2. Widget Caricamento File Modello
-    uploaded_file_modello = st.file_uploader("Carica file 'Modello' (Excel)", type=['xlsx'])
+        # 1. Widget Caricamento File Sorgente
+        uploaded_file_sorgente = st.file_uploader("Carica file 'Allenamento' (Excel, CSV o Numbers)", type=['xlsx', 'csv', 'numbers'])
 
-    # Opzione per usare modello locale se non caricato
-    path_modello_locale = FILE_MODELLO_DEFAULT
-    uso_modello_locale = False
+        # 2. Widget Caricamento File Modello
+        uploaded_file_modello = st.file_uploader("Carica file 'Modello' (Excel)", type=['xlsx'])
 
-    if not uploaded_file_modello:
-        if os.path.exists(path_modello_locale):
-            st.info(f"Nessun modello caricato. Verrà usato '{path_modello_locale}' se presente nella cartella.")
-            uso_modello_locale = True
-        else:
-            st.warning(f"Attenzione: Modello '{path_modello_locale}' non trovato in locale. Caricane uno.")
+        # Opzione per usare modello locale se non caricato
+        path_modello_locale = FILE_MODELLO_DEFAULT
+        uso_modello_locale = False
 
-    # 3. Data dei Dati
-    data_test = st.date_input("📅 Test Date Selector 📅", value=pd.Timestamp.now().date(), format="DD/MM/YYYY")
+        if not uploaded_file_modello:
+            if os.path.exists(path_modello_locale):
+                st.info(f"Nessun modello caricato. Verrà usato '{path_modello_locale}' se presente nella cartella.")
+                uso_modello_locale = True
+            else:
+                st.warning(f"Attenzione: Modello '{path_modello_locale}' non trovato in locale. Caricane uno.")
 
-    # 4. Nome Output
-    output_name = st.text_input("Nome file di output", value="Risultati_Atleta.xlsx")
-    if not output_name.endswith(".xlsx"):
-        output_name += ".xlsx"
+        # 3. Data dei Dati
+        col1, col2 = st.columns(2)
+        with col1:
+            data_test = st.date_input("📅 Seleziona Data Test", value=pd.Timestamp.now().date(), format="DD/MM/YYYY")
+        
+        # 4. Nome Output
+        with col2:
+            output_name = st.text_input("Nome file di output", value="Risultati_Atleta.xlsx")
+            if not output_name.endswith(".xlsx"):
+                output_name += ".xlsx"
 
-    # 4. Pulsante elaborazione
-    if st.button("Avvia Elaborazione"):
-        if not uploaded_file_sorgente:
-            st.error("Per favore carica il file sorgente 'Allenamento'.")
-            return
+        # 5. Pulsante elaborazione
+        if st.button("Avvia Elaborazione", type="primary"):
+            if not uploaded_file_sorgente:
+                st.error("Per favore carica il file sorgente 'Allenamento'.")
+                return
 
-        # Determinazione del modello da usare
-        modello_da_usare = None
-        if uploaded_file_modello:
-            modello_da_usare = uploaded_file_modello
-        elif uso_modello_locale:
-            modello_da_usare = path_modello_locale
-        else:
-            st.error("Manca il file Modello! Caricalo.")
-            return
+            # Determinazione del modello da usare
+            modello_da_usare = None
+            if uploaded_file_modello:
+                modello_da_usare = uploaded_file_modello
+            elif uso_modello_locale:
+                modello_da_usare = path_modello_locale
+            else:
+                st.error("Manca il file Modello! Caricalo.")
+                return
 
-        with st.spinner("Elaborazione in corso..."):
-            try:
-                # A. Caricamento Dati
-                df = carica_file_universale(uploaded_file_sorgente)
-                if df is None:
-                    st.error("Errore lettura file sorgente. Verifica il formato.")
-                    return
+            with st.spinner("Elaborazione in corso..."):
+                try:
+                    # A. Caricamento Dati
+                    df = carica_file_universale(uploaded_file_sorgente)
+                    if df is None:
+                        st.error("Errore lettura file sorgente. Verifica il formato.")
+                        return
 
-                # B. Caricamento Modello e Processamento
-                wb = load_workbook(modello_da_usare)
-                # Seleziona sempre il primo foglio disponibile
-                ws = wb.worksheets[0]
-                st.info(f"Foglio selezionato automaticamente: {ws.title}")
+                    # B. Caricamento Modello e Processamento
+                    wb = load_workbook(modello_da_usare)
+                    # Seleziona sempre il primo foglio disponibile
+                    if len(wb.worksheets) > 0:
+                        ws = wb.worksheets[0]
+                        st.info(f"Foglio selezionato automaticamente: {ws.title}")
+                    else:
+                        st.error("Il file modello non contiene fogli di lavoro.")
+                        return
 
-                # C. Esecuzione Step
-                elabora_step1_anagrafica(df, ws, data_test)
-                elabora_salti_cronologici(df, ws, data_test)
-                elabora_salti_rj(df, ws, data_test)
+                    # C. Esecuzione Step
+                    elabora_step1_anagrafica(df, ws, data_test)
+                    elabora_salti_cronologici(df, ws, data_test)
+                    elabora_salti_rj(df, ws, data_test)
 
-                # D. Salvataggio in memoria (BytesIO)
-                buffer = io.BytesIO()
-                wb.save(buffer)
-                buffer.seek(0)
+                    # D. Salvataggio in memoria (BytesIO)
+                    buffer = io.BytesIO()
+                    wb.save(buffer)
+                    buffer.seek(0)
 
-                st.success("Elaborazione Completata!")
+                    st.success("Elaborazione Completata con Successo! ✅")
 
-                # E. Bottone Download
-                st.download_button(
-                    label="📥 Scarica File Elaborato",
-                    data=buffer,
-                    file_name=output_name,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+                    # E. Bottone Download
+                    st.download_button(
+                        label="📥 Scarica File Elaborato",
+                        data=buffer,
+                        file_name=output_name,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
 
-            except Exception as e:
-                st.error(f"Errore critico: {e}")
-                st.text(traceback.format_exc())
+                except Exception as e:
+                    st.error(f"Errore durante l'elaborazione: {e}")
+                    st.text(traceback.format_exc())
+
+    elif pagina == "Report":
+        
+        st.title("📊 Report Comparativo PRE/POST")
+        st.markdown("Carica i file PRE e POST per generare il confronto automatico.")
+
+        # 1. Uploaders
+        col_up1, col_up2 = st.columns(2)
+        with col_up1:
+            file_pre = st.file_uploader("📂 Carica File PRE (Start)", type=['xlsx', 'csv', 'numbers'])
+        with col_up2:
+            file_post = st.file_uploader("📂 Carica File POST (End)", type=['xlsx', 'csv', 'numbers'])
+        
+        file_template = st.file_uploader("📂 Carica Template Report (Opzionale - Default: report.xlsx)", type=['xlsx'])
+
+        # 2. Bottone Generazione
+        if st.button("Genera Report Comparativo", type="primary"):
+            if not file_pre or not file_post:
+                st.error("⚠️ Per favore carica entrambi i file PRE e POST.")
+            else:
+                with st.spinner("⏳ Generazione Report in corso..."):
+                    try:
+                        # A. Caricamento DataFrames
+                        df_pre = carica_file_universale(file_pre)
+                        df_post = carica_file_universale(file_post)
+                        
+                        if df_pre is None or df_post is None:
+                            st.error("Errore nella lettura dei file. Verifica il formato.")
+                            st.stop()
+
+                        # B. Caricamento Template
+                        wb_report = None
+                        if file_template:
+                            wb_report = load_workbook(file_template)
+                        elif os.path.exists("report.xlsx"):
+                            wb_report = load_workbook("report.xlsx")
+                        else:
+                            st.warning("⚠️ Template 'report.xlsx' non trovato. Creazione nuovo file vuoto.")
+                            from openpyxl import Workbook
+                            wb_report = Workbook()
+                        
+                        ws_report = wb_report.active
+
+                        # C. LOGICA ESTRAZIONE & SCRITTURA
+                        import re # Import locale per sicurezza
+                        
+                        MAPPING_CONFIG = [
+                            {"label": "PESO", "row_report": 2, "cell_source": "C4"},
+                            {"label": "COSCIA DX", "row_report": 3, "cell_source": "G5"},
+                            {"label": "COSCIA SX", "row_report": 4, "cell_source": "H5"},
+                            {"label": "CMJ OPEN SQUAT NA [ABK]", "row_report": 5, "cell_source": "J9"},
+                            {"label": "CMJ HALF SQUAT NA [CMJ]", "row_report": 6, "cell_source": "J10"},
+                            {"label": "CMJ OPEN SQUAT BL [ABK]", "row_report": 7, "cell_source": "J12"},
+                            {"label": "CMJ HALF SQUAT BL [CMJ]", "row_report": 8, "cell_source": "J13"},
+                            {"label": "SL CMJ DX BL", "row_report": 9, "cell_source": "I15"},
+                            {"label": "SL CMJ SX BL", "row_report": 10, "cell_source": "I16"},
+                            {"label": "RJ [Unlimited]", "row_report": 11, "cell_source": "F19"},
+                            {"label": "Vertec - SAM", "row_report": 12, "cell_source": "E26"},
+                            {"label": "Vertec - SDA", "row_report": 13, "cell_source": "E27"},
+                            {"label": "DJa 30cm", "row_report": 14, "cell_source": "S4"},
+                            {"label": "DJa 45cm", "row_report": 15, "cell_source": "S5"},
+                            {"label": "DJa 60cm", "row_report": 16, "cell_source": "S6"},
+                            {"label": "DJa 75cm", "row_report": 17, "cell_source": "S7"},
+                            {"label": "DJa 90cm", "row_report": 18, "cell_source": "S8"},
+                            {"label": "DJa 105cm", "row_report": 19, "cell_source": "S9"},
+                            {"label": "SJ", "row_report": 20, "cell_source": "W15"},
+                            {"label": "SJi 25%", "row_report": 21, "cell_source": "W16"},
+                            {"label": "SJi 50%", "row_report": 22, "cell_source": "W17"},
+                            {"label": "SJi 75%", "row_report": 23, "cell_source": "W18"},
+                            {"label": "SJi 100%", "row_report": 24, "cell_source": "W19"},
+                            {"label": "1RM", "row_report": 25, "cell_source": "U28"},
+                        ]
+
+                        # --- 1. Funzione di Pulizia Avanzata ---
+                        def clean_numeric_value(val):
+                            """
+                            Pulisce il valore da testo (kg, cm, etc), converte virgola in punto
+                            e restituisce float. Se fallisce restituisce 0.0.
+                            """
+                            if val is None: return 0.0
+                            s = str(val).strip()
+                            if s == "": return 0.0
+                            
+                            # Rimuove tutto tranne numeri, punto, virgola, segno meno
+                            s_clean = re.sub(r'[^\d.,\-]', '', s)
+                            if not s_clean: return 0.0
+                            
+                            # Sostituisce virgola con punto
+                            s_clean = s_clean.replace(',', '.')
+                            
+                            try:
+                                return float(s_clean)
+                            except:
+                                return 0.0
+
+                        # --- 2. Helper Caricamento Excel Robusto ---
+                        def load_excel_robust(file_upl, nome_log):
+                            """
+                            Carica WB DataOnly (per valori) e WB Formule (per check).
+                            Cerca foglio 'ATLETA' (case insensitive).
+                            Restituisce (ws_val, ws_form, error_msg)
+                            """
+                            if not file_upl.name.lower().endswith('.xlsx'):
+                                return None, None, "Not XLSX"
+
+                            try:
+                                # WB Valori (Data Only = True)
+                                file_upl.seek(0)
+                                wb_val = load_workbook(file_upl, data_only=True)
+                                
+                                # WB Formule (Data Only = False)
+                                file_upl.seek(0)
+                                wb_form = load_workbook(file_upl, data_only=False)
+
+                                # Ricerca Foglio
+                                sheet_name = None
+                                for s in wb_val.sheetnames:
+                                    if "atleta" in s.lower().strip():
+                                        sheet_name = s
+                                        break
+                                
+                                if not sheet_name:
+                                    sheet_name = wb_val.sheetnames[0]
+                                    st.warning(f"⚠️ Nel file {nome_log} non ho trovato il foglio 'ATLETA'. Uso il primo foglio: '{sheet_name}'")
+                                else:
+                                    st.info(f"✅ File {nome_log}: trovato foglio target '{sheet_name}'")
+
+                                return wb_val[sheet_name], wb_form[sheet_name], None
+
+                            except Exception as e:
+                                return None, None, str(e)
+
+                        # --- 3. Caricamento Workbooks (Una volta sola) ---
+                        ws_pre_val, ws_pre_form, err_pre = load_excel_robust(file_pre, "PRE")
+                        ws_post_val, ws_post_form, err_post = load_excel_robust(file_post, "POST")
+                        
+                        # --- ESTRAZIONE NOME ATLETA PER FILE ---
+                        nome_atleta = "Atleta_Anonimo"
+                        try:
+                            # Cerchiamo prima nel POST, poi nel PRE
+                            target_ws = ws_post_val if ws_post_val else ws_pre_val
+                            if target_ws:
+                                cognome = str(target_ws["C1"].value or "").strip()
+                                nome = str(target_ws["E1"].value or "").strip()
+                                
+                                if cognome or nome:
+                                    # Unisci e pulisci spazi/caratteri strani
+                                    full = f"{cognome}_{nome}".strip('_')
+                                    # Rimuovi char non validi per filename
+                                    nome_atleta = re.sub(r'[^\w\-]', '', full.replace(' ', '_'))
+                        except Exception as e_name:
+                            print(f"Errore estrazione nome: {e_name}")
+
+                        # Se non sono XLSX, avremo df_pre e df_post (già caricati sopra con carica_file_universale)
+                        # Ma per coerenza usiamo logica dedicata
+                        
+                        # Font Colors
+                        RED_FONT = Font(color="FF0000", bold=True)
+                        GREEN_FONT = Font(color="00B050", bold=True) # Verde Excel standard
+                        
+                        # Intestazioni Colonne Report
+                        ws_report["B1"] = "PRIMA"
+                        ws_report["C1"] = "DOPO"
+                        ws_report["D1"] = "RISULTATI"
+                        ws_report["E1"] = "RISULTATI %"
+
+                        # --- LISTA PER ANTEPRIMA ---
+                        preview_data = []
+
+                        # --- 4. Iterazione Mapping ---
+                        for mappa in MAPPING_CONFIG:
+                            r_idx = mappa["row_report"]
+                            label = mappa.get("label", "")
+                            coord = mappa["cell_source"]
+                            
+                            # Etichetta Report
+                            cell_label = ws_report.cell(row=r_idx, column=1)
+                            if not cell_label.value:
+                                cell_label.value = label
+
+                            # --- Estrazione PRE ---
+                            raw_pre = None
+                            if ws_pre_val: # Uso Excel OpenPyXL
+                                cell_v = ws_pre_val[coord]
+                                raw_pre = cell_v.value
+                            else: # Uso DataFrame
+                                try:
+                                    r, c = coordinate_to_tuple(coord)
+                                    raw_pre = df_pre.iloc[r-1, c-1] if df_pre is not None else 0
+                                except: raw_pre = 0
+
+                            val_pre = clean_numeric_value(raw_pre)
+
+                            # --- Estrazione POST ---
+                            raw_post = None
+                            if ws_post_val: # Uso Excel OpenPyXL
+                                cell_v = ws_post_val[coord]
+                                raw_post = cell_v.value
+                            else:
+                                try:
+                                    r, c = coordinate_to_tuple(coord)
+                                    raw_post = df_post.iloc[r-1, c-1] if df_post is not None else 0
+                                except: raw_post = 0
+
+                            val_post = clean_numeric_value(raw_post)
+                            
+                            # 1. Scrittura Colonna B (PRIMA) e C (DOPO)
+                            cell_prima = ws_report.cell(row=r_idx, column=2)
+                            cell_dopo = ws_report.cell(row=r_idx, column=3)
+                            
+                            cell_prima.value = val_pre
+                            cell_dopo.value = val_post
+                            
+                            cell_prima.number_format = '0.00'
+                            cell_dopo.number_format = '0.00'
+
+                            # 2. Calcolo Differenza (Colonna D = 4)
+                            diff = val_post - val_pre
+                            cell_diff = ws_report.cell(row=r_idx, column=4)
+                            cell_diff.value = diff
+                            cell_diff.number_format = '0.00'
+                            
+                            if diff < 0:
+                                cell_diff.font = RED_FONT
+                            else:
+                                cell_diff.font = GREEN_FONT
+
+                            # 3. Calcolo % (Colonna E = 5)
+                            # (Post - Pre) / Pre
+                            cell_perc = ws_report.cell(row=r_idx, column=5)
+                            perc_val = 0.0
+                            if val_pre != 0:
+                                perc = (diff / val_pre) # Decimale
+                                perc_val = perc
+                                cell_perc.value = perc
+                                cell_perc.number_format = '0.00%'
+                                
+                                if perc < 0:
+                                    cell_perc.font = RED_FONT
+                                else:
+                                    cell_perc.font = GREEN_FONT
+                            else:
+                                cell_perc.value = ""
+                            
+                            # Aggiungi riga ai dati per anteprima
+                            preview_data.append({
+                                "Test": label,
+                                "PRIMA": val_pre,
+                                "DOPO": val_post,
+                                "Diff": diff,
+                                "Diff %": f"{perc_val:.2%}" if val_pre != 0 else "",
+                                "PercRaw": perc_val * 100 # Salviamo come numero (es. 10.5) per i grafici
+                            })
+                        
+                        # --- ANTEPRIMA ---
+                        if preview_data:
+                            st.write("### 📂 Anteprima Report Generato")
+                            df_dashboard = pd.DataFrame(preview_data)
+                            
+                            # Mostra Tabella (senza colonna PercRaw che è tecnica)
+                            st.dataframe(df_dashboard.drop(columns=["PercRaw"]), width="stretch")
+
+
+                        # D. Salvataggio
+                        buffer = io.BytesIO()
+                        wb_report.save(buffer)
+                        buffer.seek(0)
+                        
+                        st.success("Report Generato con Successo!")
+                        st.download_button(
+                            label="📥 Scarica Report Comparativo",
+                            data=buffer,
+                            file_name=f"Report_Analisi_{nome_atleta}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        )
+
+                    except Exception as e:
+                        st.error(f"Errore durante l'elaborazione del report: {e}")
+                        st.write(traceback.format_exc())
 
 if __name__ == "__main__":
     main()
