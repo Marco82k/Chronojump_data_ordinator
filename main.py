@@ -167,8 +167,11 @@ def carica_file_universale(uploaded_file):
     filename = uploaded_file.name
     print(f"Lettura buffer: {filename}")
 
+    uploaded_file.seek(0)
     try:
-        return pd.read_excel(uploaded_file, header=None)
+        df = pd.read_excel(uploaded_file, header=None)
+        uploaded_file.seek(0)
+        return df
     except:
         pass
 
@@ -192,6 +195,7 @@ def carica_file_universale(uploaded_file):
                         table = tables[0]
                         data = table.rows(values_only=True)
                         df = pd.DataFrame(data)
+                        uploaded_file.seek(0)
                         return df
             finally:
                 if os.path.exists(tmp_path):
@@ -204,9 +208,12 @@ def carica_file_universale(uploaded_file):
         try:
             uploaded_file.seek(0)
             df = pd.read_csv(uploaded_file, header=None, sep=sep, encoding='latin1', on_bad_lines='skip', engine='python')
-            if df.shape[1] > 1: return df
+            if df.shape[1] > 1: 
+                uploaded_file.seek(0)
+                return df
         except:
             continue
+    uploaded_file.seek(0)
     return None
 
 
@@ -786,16 +793,66 @@ def main():
             else:
                 st.warning(f"Attenzione: Modello '{path_modello_locale}' non trovato in locale. Caricane uno.")
 
+        # --- GESTIONE NOME FILE OUTPUT AUTOMATICO ---
+        def estrai_cognome_da_sorgente(df):
+            if df is None: return None
+            riga_header = -1
+            col_map = {}
+            for i, riga in df.iterrows():
+                riga_check = [str(x).strip().lower() for x in riga.tolist()]
+                if "id" in riga_check and "nome" in riga_check:
+                    riga_header = i
+                    for idx, col_name in enumerate(riga_check):
+                        col_map[col_name] = idx
+                    break
+            
+            if riga_header != -1 and riga_header + 1 < len(df):
+                riga_atleta = df.iloc[riga_header + 1]
+                full_name = ""
+                for n in ["nome", "nome persona"]:
+                    if n in col_map:
+                        full_name = str(riga_atleta.iloc[col_map[n]]).strip()
+                        if full_name:
+                            break
+                if full_name and full_name.lower() not in ["none", "nan", "0", "0.0", ""]:
+                    parti = full_name.split(" ", 1)
+                    if len(parti) > 0:
+                        cognome = parti[0].strip().replace(' ', '_')
+                        cognome = re.sub(r'[^\w\-]', '', cognome)
+                        return cognome
+            return None
+
+        file_sorgente_signature = f"{uploaded_file_sorgente.name}_{uploaded_file_sorgente.size}" if uploaded_file_sorgente else None
+
+        if 'athletic_file_name_val' not in st.session_state:
+            st.session_state['athletic_file_name_val'] = "Risultati_Atleta"
+        if 'last_sorgente_file_sig' not in st.session_state:
+            st.session_state['last_sorgente_file_sig'] = None
+
+        if file_sorgente_signature is not None:
+            if st.session_state['last_sorgente_file_sig'] != file_sorgente_signature:
+                st.session_state['last_sorgente_file_sig'] = file_sorgente_signature
+                df_temp = carica_file_universale(uploaded_file_sorgente)
+                cognome_estr = estrai_cognome_da_sorgente(df_temp)
+                if cognome_estr:
+                    st.session_state['athletic_file_name_val'] = f"Risultati_{cognome_estr}"
+                else:
+                    st.session_state['athletic_file_name_val'] = "Risultati_Atleta"
+        else:
+            if st.session_state['last_sorgente_file_sig'] is not None:
+                st.session_state['last_sorgente_file_sig'] = None
+                st.session_state['athletic_file_name_val'] = "Risultati_Atleta"
+
         # 3. Data dei Dati
         col1, col2 = st.columns(2)
         with col1:
             data_test = st.date_input("📅 Seleziona Data Test", value=pd.Timestamp.now().date(), format="DD/MM/YYYY")
         
-        # 4. Nome Output
+        # 4. Nome Output (sincronizzato con lo stato)
         with col2:
-            output_name = st.text_input("Nome file di output", value="Risultati_Atleta.xlsx")
-            if not output_name.endswith(".xlsx"):
-                output_name += ".xlsx"
+            athletic_output_name = st.text_input("Nome file di output", key="athletic_file_name_val")
+            if not athletic_output_name.endswith(".xlsx"):
+                athletic_output_name += ".xlsx"
 
         # 5. Pulsante elaborazione
         if st.button("Avvia Elaborazione", type="primary"):
@@ -847,7 +904,7 @@ def main():
                     st.download_button(
                         label="📥 Scarica File Elaborato",
                         data=buffer,
-                        file_name=output_name,
+                        file_name=athletic_output_name,
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
 
@@ -868,6 +925,50 @@ def main():
             file_post = st.file_uploader("📂 Carica File POST (End)", type=['xlsx', 'csv', 'numbers'])
         
         file_template = st.file_uploader("📂 Carica Template Report (Opzionale - Default: report.xlsx)", type=['xlsx'])
+
+        # --- GESTIONE NOME FILE OUTPUT ---
+        def estrai_cognome_da_post(f):
+            if not f.name.lower().endswith('.xlsx'): return None
+            try:
+                f.seek(0)
+                wb = load_workbook(f, data_only=True)
+                sheet_name = next((s for s in wb.sheetnames if "atleta" in s.lower().strip()), None)
+                if not sheet_name and len(wb.sheetnames) > 0:
+                    sheet_name = wb.sheetnames[0]
+                if sheet_name:
+                    cognome = str(wb[sheet_name]["C1"].value or "").strip()
+                    if cognome and cognome.lower() not in ["none", "nan", "0", "0.0"]:
+                        f.seek(0)
+                        return cognome
+            except:
+                pass
+            f.seek(0)
+            return None
+
+        file_post_signature = f"{file_post.name}_{file_post.size}" if file_post else None
+        
+        if 'report_file_name_val' not in st.session_state:
+            st.session_state['report_file_name_val'] = "Report_Analisi_Atleta"
+        if 'last_post_file_sig' not in st.session_state:
+            st.session_state['last_post_file_sig'] = None
+
+        if file_post_signature is not None:
+            if st.session_state['last_post_file_sig'] != file_post_signature:
+                st.session_state['last_post_file_sig'] = file_post_signature
+                cognome_estr = estrai_cognome_da_post(file_post)
+                if cognome_estr:
+                    st.session_state['report_file_name_val'] = f"Report_{cognome_estr}"
+                else:
+                    st.session_state['report_file_name_val'] = "Report_Analisi_Atleta"
+        else:
+            if st.session_state['last_post_file_sig'] is not None:
+                st.session_state['last_post_file_sig'] = None
+                st.session_state['report_file_name_val'] = "Report_Analisi_Atleta"
+
+        # Input Utente (value is mapped via key)
+        report_output_name = st.text_input("Nome file output", key="report_file_name_val")
+        if not report_output_name.endswith(".xlsx"):
+            report_output_name += ".xlsx"
 
         # 2. Bottone Generazione
         if st.button("Genera Report Comparativo", type="primary"):
@@ -898,7 +999,6 @@ def main():
                         ws_report = wb_report.active
 
                         # C. LOGICA ESTRAZIONE & SCRITTURA
-                        import re # Import locale per sicurezza
                         
                         MAPPING_CONFIG = [
                             {"label": "PESO", "row_report": 2, "cell_source": "C4"},
@@ -1126,7 +1226,7 @@ def main():
                         st.download_button(
                             label="📥 Scarica Report Comparativo",
                             data=buffer,
-                            file_name=f"Report_Analisi_{nome_atleta}.xlsx",
+                            file_name=report_output_name,
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                         )
 
